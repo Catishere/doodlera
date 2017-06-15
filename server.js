@@ -2,7 +2,6 @@ var express = require('express');
 var fs		= require('fs');
 var path 	= require('path');
 var app 	= express();
-var pg = require('pg');
 var http	= require('http').Server(app);
 var io		= require('socket.io')(http);
 var port	= process.env.PORT || 3000;
@@ -12,8 +11,6 @@ process.setMaxListeners(0);
 
 app.use("/", express.static(__dirname));
 
-const connectionString = process.env.DATABASE_URL || "postgres://postgres:root@localhost:5432/doodlera";
-
 var time = 60;
 
 fs.readFile('etc/words.txt', "utf-8", function (err, data) {
@@ -21,12 +18,23 @@ fs.readFile('etc/words.txt', "utf-8", function (err, data) {
 	words = data.split('\n');
 });
 
-const client = new pg.Client(connectionString);
-client.connect();
+var knex = require('knex')({
+  client: 'pg',
+  connection: process.env.PG_CONNECTION_STRING || process.env.DATABASE_URL,
+  searchPath: 'knex,public,doodlera_schema'
+});
 
-const query = client.query(
-  'CREATE TABLE IF NOT EXISTS doodlera_schema.doodlera_table (id SERIAL PRIMARY KEY, name VARCHAR(40) not null, points integer DEFAULT 0)');
-query.on('end', () => { client.end(); });
+knex.schema.withSchema('doodlera_schema').createTableIfNotExists('doodlera_table', function (table) {
+  table.increments();
+  table.string('name');
+  table.integer('points').defaultTo(0);
+}).then();
+
+var bookshelf = require('bookshelf')(knex);
+
+var User = bookshelf.Model.extend({
+  tableName: 'doodlera_table'
+});
 
 setInterval( function() {
 	if (playercount != 0) {
@@ -54,60 +62,29 @@ io.sockets.on('connection', function(socket){
 	
 	socket.on('chosenname', function(name){
 		socketid = 0;
-		pg.connect(connectionString, (err, client, done) => {
-			// Handle connection errors
-			if(err) {
-			  done();
-			  console.log(err);
+		
+		new User({'name': name})
+		.fetch()
+		.then(function(model) {
+			if (model == null) {
+				new User({'name': name}).save().then(function(mdl) {
+					socketid = mdl.get('id');
+				});
 			}
-			
-			const query = client.query('SELECT * FROM doodlera_schema.doodlera_table WHERE name = $1 LIMIT 1', [name]);
-			
-			query.on('row', (row) => {
-				socketid = row.id;
-				playercount = playercount + 1;
-			});
-					
-			query.on('end', () => {
-				if (socketid == 0) {
-					client.query('INSERT INTO doodlera_schema.doodlera_table (name) values($1) RETURNING id', [name], function(err, results) {
-						if(err) 
-						{
-							done()
-							console.log(err);//handle error
-						}
-						else 
-						{
-							socketid = results.rows[0].id;
-							playercount = playercount + 1;
-						}
-					});
-				}
-				done();
-			});
+			else {
+				socketid = model.get('id');
+			}
+			playercount = playercount + 1;
 		});
-  });
+    });
 	
-	socket.on('chat message', function(name, msg){
+	socket.on('chat message', function(name, msg) {
 		if (msg == "!points")
 		{
-			pg.connect(connectionString, (err, client, done) => {
-				// Handle connection errors
-				if(err) {
-				  done();
-				  console.log(err);
-				}
-				
-				const query = client.query('SELECT * FROM doodlera_schema.doodlera_table WHERE name = $1 LIMIT 1', [name]);
-				// Stream results back one row at a time
-				query.on('row', (row) => {
-					io.emit('chat message',null,'' + name + ' has ' + row.points + ' points.');
-				});
-				
-				// After all data is returned, close connection and return results
-				query.once('end', () => {
-				  done();
-				});
+			new User({'name': name})
+			.fetch()
+			.then(function(model) {
+				io.emit('chat message',null,'' + name + ' has ' + model.get('points') + ' points.');
 			});
 		}
 		io.emit('chat message', name, msg);
@@ -118,45 +95,19 @@ io.sockets.on('connection', function(socket){
 	});
 	
 	socket.on('winner', function(voter,winner){
-		pg.connect(connectionString, (err, client, done) => {
-		// Handle connection errors
-		if(err) {
-		  done();
-		  console.log(err);
-		}
 		
 		io.emit('chat message', null, '' + voter + " voted for " + winner + "!");
-		// SQL Query > Insert Data
 		
-		client.query('UPDATE doodlera_schema.doodlera_table SET points = points + 1 WHERE name = $1', [winner]);
-		
-		// After all data is returned, close connection and return results
-		query.once('end', () => {
-		  done();
-		});
-		});
+		knex('doodlera_table').where('name',winner).increment('points').then();
 	});
 	
-	socket.on('disconnect', function(){
-		pg.connect(connectionString, (err, client, done) => {
-			// Handle connection errors
-			if(err) {
-			  done();
-			  console.log(err);
-			}
+	socket.on('disconnect', function() {
 
-			// SQL Query > Select Data
-			const query = client.query('SELECT * FROM doodlera_schema.doodlera_table WHERE id = $1', [socketid]);
-			// Stream results back one row at a time
-			query.on('row', (row) => {
-			  	io.emit('chat message',null,'' + row.name.replace(/`/g , "") + ' disconnected.');
-				playercount = playercount - 1;
-			});
-
-			// After all data is returned, close connection and return results
-			query.once('end', () => {
-			  done();
-			});
+		new User({'id': socketid})
+		.fetch()
+		.then(function(model) {
+			io.emit('chat message',null,'' + model.get('name').replace(/`/g , "") + ' disconnected.');
+			playercount = playercount - 1;
 		});
 	});
 });

@@ -9,12 +9,14 @@
   "author": "Victor Gyoshev",
   "license": "MIT",
   "dependencies": {
+    "bookshelf": "^0.10.3",
     "express": "^4.15.2",
-	"socket.io": "^1.7.3",
-	"pg": "^6.1.5"
+    "knex": "^0.13.0",
+    "pg": "^6.1.5",
+    "socket.io": "^1.7.3"
   },
   "engines": {
     "node": "6.10.0",
-	"npm": "3.10.10"
+    "npm": "3.10.10"
   }
 }
